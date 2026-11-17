@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function roleOf() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role; }
+    function isEmployer() { return signedIn() && roleOf() == 'employer'; }
+    function isCandidate() { return signedIn() && roleOf() == 'candidate'; }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'role', 'createdAt'])
+        && request.resource.data.role in ['candidate', 'employer']
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 80;
+      allow update, delete: if false;
+    }
+
+    match /profiles/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isEmployer());
+      allow write: if signedIn() && request.auth.uid == uid && isCandidate();
+    }
+
+    match /resumes/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isEmployer());
+      allow create, update: if signedIn() && request.auth.uid == uid && isCandidate()
+        && request.resource.data.bytes <= 716800
+        && request.resource.data.content is string
+        && request.resource.data.content.size() < 1000000;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /conversations/{cid} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isEmployer()
+        && request.resource.data.participants.size() == 2
+        && request.resource.data.participants[1] == request.auth.uid
+        && cid == request.resource.data.participants[0] + '_' + request.auth.uid;
+      allow update: if signedIn() && request.auth.uid in resource.data.participants
+        && request.resource.data.participants == resource.data.participants;
+
+      match /messages/{mid} {
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(cid)).data.participants;
+        allow create: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/conversations/$(cid)).data.participants
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 1000;
+      }
+    }
+  }
+}
